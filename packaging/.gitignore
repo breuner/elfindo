@@ -1,0 +1,8 @@
+RPMS/
+BUILDROOT/
+/*.deb
+/*.ddeb
+/*.build
+/*.buildinfo
+/*.changes
+/*.tar.gz

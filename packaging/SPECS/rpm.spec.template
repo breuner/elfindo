@@ -1,0 +1,14 @@
+Name:           __PACKAGE_NAME__
+Version:        __VERSION__
+Release:        1
+Summary:        Parallel core utils
+License:        GPLv3+
+
+%description
+Parallel core utilities.
+
+%clean
+rm -rf %{buildroot}
+
+%files
+%{_bindir}/__FIND_EXE_NAME__
