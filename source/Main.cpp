@@ -126,6 +126,7 @@ struct Statistics
 	std::atomic_uint64_t numDefaultACLsFound {0};
 	std::atomic_uint64_t numErrors {0}; // e.g. permission errors
 	std::atomic_uint64_t numBytesCopied {0};
+	std::atomic_uint64_t numFilesNotCopied {0}; // num skipped because non-regular file type
 } statistics;
 
 class ScanDoneException : public std::exception {};
@@ -542,8 +543,16 @@ void copyEntry(const std::string& entryPath, const struct dirent* dirEntry,
 	else
 	if(S_ISLNK(statBuf->st_mode) )
 	{ // copy symlink
-		const unsigned bufSize = 16*1024; // 16KiB
+		const unsigned bufSize = 16*1024; // 16KiB copy buffer
 		char* buf = (char*)malloc(bufSize);
+
+		if(!buf)
+		{
+			fprintf(stderr, "Failed to allocate memory buffer for symlink copy. Alloc size: %u\n",
+				bufSize);
+			exit(1);
+		}
+
 		ssize_t readRes = readlink(entryPath.c_str(), buf, bufSize);
 		if(readRes == bufSize)
 		{
@@ -551,6 +560,7 @@ void copyEntry(const std::string& entryPath, const struct dirent* dirEntry,
 				entryPath.c_str(), bufSize);
 
 			statistics.numErrors++;
+			free(buf);
 			return;
 		}
 		else
@@ -560,6 +570,7 @@ void copyEntry(const std::string& entryPath, const struct dirent* dirEntry,
 				entryPath.c_str(), strerror(errno) );
 
 			statistics.numErrors++;
+			free(buf);
 			return;
 		}
 
@@ -579,8 +590,12 @@ void copyEntry(const std::string& entryPath, const struct dirent* dirEntry,
 				destPath.c_str(), strerror(errno) );
 
 			statistics.numErrors++;
+			free(buf);
 			return;
 		}
+
+		// symlink copy done => cleanup
+		free(buf);
 	}
 	else
 	if(S_ISREG(statBuf->st_mode) )
@@ -611,6 +626,13 @@ void copyEntry(const std::string& entryPath, const struct dirent* dirEntry,
 		char* buf = (char*)malloc(bufSize);
 		ssize_t readRes;
 
+		if(!buf)
+		{
+			fprintf(stderr, "Failed to allocate memory buffer for file copy. Alloc size: %u\n",
+				bufSize);
+			exit(1);
+		}
+
 		// copy file contents
 		for( ; ; )
 		{
@@ -626,6 +648,7 @@ void copyEntry(const std::string& entryPath, const struct dirent* dirEntry,
 				statistics.numErrors++;
 				close(sourceFD);
 				close(destFD);
+				free(buf);
 				return;
 			}
 
@@ -638,6 +661,7 @@ void copyEntry(const std::string& entryPath, const struct dirent* dirEntry,
 				statistics.numErrors++;
 				close(sourceFD);
 				close(destFD);
+				free(buf);
 				return;
 			}
 			else
@@ -650,6 +674,7 @@ void copyEntry(const std::string& entryPath, const struct dirent* dirEntry,
 				statistics.numErrors++;
 				close(sourceFD);
 				close(destFD);
+				free(buf);
 				return;
 			}
 
@@ -659,10 +684,14 @@ void copyEntry(const std::string& entryPath, const struct dirent* dirEntry,
 		// regular file copy complete => cleanup
 		close(sourceFD);
 		close(destFD);
+		free(buf);
 	}
 	else
+	{
 		fprintf(stderr, "Skipping copy of entry due to non-regular file type. "
 			"Path: %s\n", entryPath.c_str() );
+		statistics.numFilesNotCopied++;
+	}
 }
 
 /**
@@ -1026,7 +1055,8 @@ void printSummary()
 	if(!config.copyDestDir.empty() )
 		std::cerr << "  * copy speed:    " <<
 			copyMiBPerSec << " MiB/s; " <<
-			"total: " << copyMiBTotal << " MiB" << std::endl;
+			"total: " << copyMiBTotal << " MiB; " <<
+			"skipped files: " << statistics.numFilesNotCopied << std::endl;
 }
 
 void printUsageAndExit()
