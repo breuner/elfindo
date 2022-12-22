@@ -5,7 +5,7 @@
 EXE_NAME           ?= $(shell cat build_helpers/findexename)
 EXE_VER_MAJOR      ?= 0
 EXE_VER_MINOR      ?= 9
-EXE_VER_PATCHLEVEL ?= 0
+EXE_VER_PATCHLEVEL ?= 2
 EXE_VERSION        ?= $(EXE_VER_MAJOR).$(EXE_VER_MINOR)-$(EXE_VER_PATCHLEVEL)
 EXE                ?= $(BIN_PATH)/$(EXE_NAME)
 EXE_UNSTRIPPED     ?= $(EXE)-unstripped
@@ -252,7 +252,7 @@ help:
 	@echo
 	@echo 'Optional Compile/Link Arguments:'
 	@echo '   CXX=<string>            - Path to alternative C++ compiler. (Default: g++)'
-	@echo '   CXX_FLAVOR=<string>     - C++ standard compiler flag. (Default: c++14)'
+	@echo '   CXX_FLAVOR=<string>     - C++ standard compiler flag. (Default: c++17)'
 	@echo '   CXXFLAGS_EXTRA=<string> - Additional C++ compiler flags.'
 	@echo '   LDFLAGS_EXTRA=<string>  - Additional linker flags.'
 	@echo '   BUILD_VERBOSE=1         - Enable verbose build output.'

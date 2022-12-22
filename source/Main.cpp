@@ -56,6 +56,7 @@
 #define ARG_SEARCHTYPE_LONG	"type"
 #define ARG_VERBOSE_LONG	"verbose"
 #define ARG_VERSION_LONG	"version"
+#define ARG_COPYDEST_LONG	"copyto"
 
 #define DIRENTRY_JSON_TYPE_BLK		"blockdev"
 #define DIRENTRY_JSON_TYPE_CHR		"chardev"
@@ -105,6 +106,7 @@ struct Config
 
 		unsigned filterSizeAndTimeFlags; // FILTER_FLAG_..._{EXACT,LESS,GREATER} flags
 	} filterSizeAndTime;
+	std::string copyDestDir; // target dir for file/dir copies
 } config;
 
 struct State
@@ -123,6 +125,7 @@ struct Statistics
 	std::atomic_uint64_t numAccessACLsFound {0};
 	std::atomic_uint64_t numDefaultACLsFound {0};
 	std::atomic_uint64_t numErrors {0}; // e.g. permission errors
+	std::atomic_uint64_t numBytesCopied {0};
 } statistics;
 
 class ScanDoneException : public std::exception {};
@@ -508,8 +511,165 @@ bool filterPrintEntryBySizeOrTime(const std::string& entryPath, const struct dir
 }
 
 /**
+ * Copy entry if it's a regular file, dir or symlink; skip others.
+ * This won't preserve hardlinks.
+ */
+void copyEntry(const std::string& entryPath, const struct dirent* dirEntry,
+	const struct stat* statBuf)
+{
+	if(config.copyDestDir.empty() )
+		return;
+
+	std::string relativeEntryPath = entryPath.substr(config.scanPaths.front().length() );
+	std::string destPath = config.copyDestDir + "/" + relativeEntryPath;
+
+	if(config.printVerbose)
+		fprintf(stderr, "Copying: %s -> %s\n", entryPath.c_str(), destPath.c_str() );
+
+	// config.statAll is forced to true when config.copyDestDir is set
+
+	if(S_ISDIR(statBuf->st_mode) )
+	{ // create directory
+		int mkRes = mkdir(destPath.c_str(), S_IRWXU | S_IRWXG | S_IROTH | S_IXOTH);
+		if(mkRes && (errno != EEXIST) )
+		{
+			fprintf(stderr, "Failed to create dir: %s; Error: %s\n",
+				destPath.c_str(), strerror(errno) );
+
+			statistics.numErrors++;
+		}
+	}
+	else
+	if(S_ISLNK(statBuf->st_mode) )
+	{ // copy symlink
+		const unsigned bufSize = 16*1024; // 16KiB
+		char* buf = (char*)malloc(bufSize);
+		ssize_t readRes = readlink(entryPath.c_str(), buf, bufSize);
+		if(readRes == bufSize)
+		{
+			fprintf(stderr, "Failed to copy symlink due to long target path: %s; Max: %u\n",
+				entryPath.c_str(), bufSize);
+
+			statistics.numErrors++;
+			return;
+		}
+		else
+		if(readRes == -1)
+		{
+			fprintf(stderr, "Failed to read symlink for copying: %s; Error: %s\n",
+				entryPath.c_str(), strerror(errno) );
+
+			statistics.numErrors++;
+			return;
+		}
+
+		// readlink() does not zero-terminate the string in buf
+		buf[readRes] = 0;
+
+		int linkRes = symlink(buf, destPath.c_str() );
+		if( (linkRes == -1) && (errno == EEXIST) )
+		{ // symlink() can't overwrite existing file, so unlink and try again
+			unlink(destPath.c_str() );
+			linkRes = symlink(buf, destPath.c_str() );
+		}
+
+		if(linkRes == -1)
+		{
+			fprintf(stderr, "Failed to create symlink for copying: %s; Error: %s\n",
+				destPath.c_str(), strerror(errno) );
+
+			statistics.numErrors++;
+			return;
+		}
+	}
+	else
+	if(S_ISREG(statBuf->st_mode) )
+	{ // copy regular file
+		int sourceFD = open(entryPath.c_str(), O_RDONLY);
+		if(sourceFD == -1)
+		{
+			fprintf(stderr, "Failed to open copy source file for reading: %s; Error: %s\n",
+				entryPath.c_str(), strerror(errno) );
+
+			statistics.numErrors++;
+			return;
+		}
+
+		int destFD = open(destPath.c_str(), O_CREAT | O_TRUNC | O_WRONLY,
+			S_IRWXU | S_IRWXG | S_IROTH | S_IXOTH);
+		if(destFD == -1)
+		{
+			fprintf(stderr, "Failed to open copy destination file for writing: %s; Error: %s\n",
+				destPath.c_str(), strerror(errno) );
+
+			statistics.numErrors++;
+			close(sourceFD);
+			return;
+		}
+
+		const unsigned bufSize = 4*1024*1024; // 4MiB copy buffer
+		char* buf = (char*)malloc(bufSize);
+		ssize_t readRes;
+
+		// copy file contents
+		for( ; ; )
+		{
+			readRes = read(sourceFD, buf, bufSize);
+			if(!readRes)
+				break;
+			else
+			if(readRes == -1)
+			{
+				fprintf(stderr, "Failed to read from copy source file: %s; Error: %s\n",
+					entryPath.c_str(), strerror(errno) );
+
+				statistics.numErrors++;
+				close(sourceFD);
+				close(destFD);
+				return;
+			}
+
+			ssize_t writeRes = write(destFD, buf, readRes);
+			if(writeRes == -1)
+			{
+				fprintf(stderr, "Failed to write to copy destination file: %s; Error: %s\n",
+					destPath.c_str(), strerror(errno) );
+
+				statistics.numErrors++;
+				close(sourceFD);
+				close(destFD);
+				return;
+			}
+			else
+			if(readRes != writeRes)
+			{
+				fprintf(stderr, "Failed to write to copy destination file: %s; "
+					"Expected write size: %zd; Actual write size: %zd\n",
+					destPath.c_str(), readRes, writeRes);
+
+				statistics.numErrors++;
+				close(sourceFD);
+				close(destFD);
+				return;
+			}
+
+			statistics.numBytesCopied += writeRes;
+		}
+
+		// regular file copy complete => cleanup
+		close(sourceFD);
+		close(destFD);
+	}
+	else
+		fprintf(stderr, "Skipping copy of entry due to non-regular file type. "
+			"Path: %s\n", entryPath.c_str() );
+}
+
+/**
  * Print entry either as plain newline-terminated string to console or in JSON format, depending
  * on config values.
+ *
+ * This also contains the filtering and file/dir copying calls.
  *
  * @dirEntry does not have to be provided if config.printJSON==false. otherwise it only needs to be
  * 		provided if statBuf is not provided, but there are special cases where it can still be
@@ -534,6 +694,12 @@ void printEntry(const std::string& entryPath, const struct dirent* dirEntry,
 
 	if(!filterPrintEntryBySizeOrTime(entryPath, dirEntry, statBuf) )
 		return;
+
+	// copy
+
+	copyEntry(entryPath, dirEntry, statBuf);
+
+	// print entry
 
 	if(!config.printJSON)
 	{ // simple print of path
@@ -808,6 +974,9 @@ void printSummary()
 	uint64_t scanEntriesTotal = statistics.numDirsFound + statistics.numFilesFound;
 	uint64_t scanEntriesPerSec =
 		( (double)scanEntriesTotal / elapsedMicroSec.count() ) * 1000000;
+	uint64_t copyMiBTotal = statistics.numBytesCopied / (1024*1024);
+	uint64_t copyMiBPerSec = ( (double)copyMiBTotal / elapsedMicroSec.count() ) * 1000000;
+
 
 	if(config.printVerbose)
 	{
@@ -832,14 +1001,18 @@ void printSummary()
 	}
 
 	std::cerr << "STATISTICS:" << std::endl;
+
 	std::cerr << "  * entries found: " <<
 			"files: " << statistics.numFilesFound << "; " <<
 			"dirs: " << statistics.numDirsFound << std::endl;
+
 	std::cerr << "  * special cases: " <<
 			"unknown type: " << statistics.numUnknownFound << "; " <<
 			"errors: " << statistics.numErrors << std::endl;
+
 	if(statistics.numStatCalls)
 		std::cerr << "  * stat calls:    " << statistics.numStatCalls << std::endl;
+
 	if(config.checkACLs)
 		std::cerr << "  * ACLs found:    " <<
 			statistics.numAccessACLsFound << " access; " <<
@@ -849,6 +1022,11 @@ void printSummary()
 		scanEntriesPerSec << " entries/s; " <<
 		"runtime: " << elapsedSec << "." <<	std::setfill('0') << std::setw(3) <<
 			elapsedMilliSecRemainder << "s" << std::endl;
+
+	if(!config.copyDestDir.empty() )
+		std::cerr << "  * copy speed:    " <<
+			copyMiBPerSec << " MiB/s; " <<
+			"total: " << copyMiBTotal << " MiB" << std::endl;
 }
 
 void printUsageAndExit()
@@ -864,6 +1042,9 @@ void printUsageAndExit()
 	std::cout << "                      +/- prefix to match older or more recent values." << std::endl;
 	std::cout << "  --aclcheck        - Query ACLs of all discovered entries." << std::endl;
 	std::cout << "                      (Just for testing, does not change the result set.)" << std::endl;
+	std::cout << "  --copyto PATH     - Copy discovered files and dirs to this directory." << std::endl;
+	std::cout << "                      Only regular files, dirs and symlinks will be copied." << std::endl;
+	std::cout << "                      Hardlinks will not be preserved. Source has to be a dir." << std::endl;
 	std::cout << "  --ctime NUM       - ctime filter based on number of days in the past." << std::endl;
 	std::cout << "                      +/- prefix to match older or more recent values." << std::endl;
 	std::cout << "  --godeep NUM      - Threshold to switch from breadth to depth search." << std::endl;
@@ -1069,6 +1250,7 @@ void parseArguments(int argc, char **argv)
 		static struct option long_options[] =
 		{
 				{ ARG_ACLCHECK_LONG, no_argument, 0, 0 },
+				{ ARG_COPYDEST_LONG, required_argument, 0, 0 },
 				{ ARG_FILTER_ATIME, required_argument, 0, 0 },
 				{ ARG_FILTER_CTIME, required_argument, 0, 0 },
 				{ ARG_FILTER_MTIME, required_argument, 0, 0 },
@@ -1111,6 +1293,12 @@ void parseArguments(int argc, char **argv)
 
 				if(ARG_ACLCHECK_LONG == currentOptionName)
 					config.checkACLs = true;
+				else
+				if(ARG_COPYDEST_LONG == currentOptionName)
+				{
+					config.copyDestDir = optarg;
+					config.statAll = true; // to be able to rely on type in statBuf and for mtime
+				}
 				else
 				if(ARG_FILTER_ATIME == currentOptionName)
 					PARSE_EXACT_LESS_GREATER_VAL(optarg, atime, ATIME);
@@ -1166,7 +1354,9 @@ void parseArguments(int argc, char **argv)
 				config.numThreads = std::atoi(optarg);
 			break;
 
-			case '?': // unknown/extraneous option
+			case '?': // unknown (long or short) option
+				fprintf(stderr, "Aborting due to unrecognized option\n");
+				exit(1);
 			break;
 
 			default:
@@ -1193,10 +1383,20 @@ void parseArguments(int argc, char **argv)
 			fprintf(stderr, "\n");
 	}
 
-
 	// init config defaults
 	if(!config.depthSearchStartThreshold)
 		config.depthSearchStartThreshold = config.numThreads;
+
+
+	// sanity check
+
+	if(!config.copyDestDir.empty() && (config.scanPaths.size() > 1) )
+	{
+		fprintf(stderr, "Only a single scan path may be given when "
+			"\"--" ARG_COPYDEST_LONG "\" is used\n");
+		exit(1);
+	}
+
 }
 
 int main(int argc, char** argv)

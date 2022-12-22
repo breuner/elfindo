@@ -24,10 +24,8 @@ docker rm $CONTAINER_NAME
 #docker pull $IMAGE_NAME && \
 docker run --platform linux/arm64 --name $CONTAINER_NAME --privileged -it -v $PWD:$PWD -w $PWD $IMAGE_NAME \
     sh -c "\
-    apk add bash boost-dev build-base gcc g++ git libaio-dev libexecinfo-dev make numactl-dev \
-        cmake curl-dev curl-static openssl-libs-static ncurses-static libexecinfo-static \
-        boost-static ncurses zlib-static libretls-static nghttp2-static \
-        brotli-static ncurses-dev sudo tar && \
+    apk add bash build-base gcc g++ git libexecinfo-dev make \
+        libexecinfo-static sudo tar && \
     adduser -u $UID -D -H builduser && \
     sudo -u builduser make clean-all && \
     sudo -u builduser make -j $(nproc) \
