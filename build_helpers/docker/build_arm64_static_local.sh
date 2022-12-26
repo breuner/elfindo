@@ -24,7 +24,7 @@ docker rm $CONTAINER_NAME
 #docker pull $IMAGE_NAME && \
 docker run --platform linux/arm64 --name $CONTAINER_NAME --privileged -it -v $PWD:$PWD -w $PWD $IMAGE_NAME \
     sh -c "\
-    apk add bash build-base gcc g++ git libexecinfo-dev make \
+    apk add bash build-base cmake gcc g++ git libexecinfo-dev make \
         libexecinfo-static sudo tar && \
     adduser -u $UID -D -H builduser && \
     sudo -u builduser make clean-all && \

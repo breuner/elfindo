@@ -1,9 +1,10 @@
 # Changelog of elfindo
 
-## v0.9.2 (work in progress)
+## v0.9.2 (Dec 27, 2022)
 
 ### New Features & Enhancements
 * New option "--copyto PATH" to copy all discovered regular files, symlinks, dirs from source to given destination.
+* New option "--unlink" to delete all files under the given path.
 
 ### Contributors
 * Thanks to Vang Le Quy for helpful comments and suggestions.

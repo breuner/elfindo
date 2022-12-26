@@ -20,7 +20,7 @@ docker rm $CONTAINER_NAME
 docker pull $IMAGE_NAME && \
 docker run --name $CONTAINER_NAME --privileged -it -v $PWD:$PWD -w $PWD $IMAGE_NAME \
     sh -c "\
-    apk add bash boost-dev build-base gcc g++ git libexecinfo-dev make \
+    apk add bash boost-dev build-base cmake gcc g++ git libexecinfo-dev make \
         libexecinfo-static sudo && \
     adduser -u $UID -D -H builduser && \
     sudo -u builduser make clean-all && \

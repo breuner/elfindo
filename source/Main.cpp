@@ -57,6 +57,11 @@
 #define ARG_VERBOSE_LONG	"verbose"
 #define ARG_VERSION_LONG	"version"
 #define ARG_COPYDEST_LONG	"copyto"
+#define ARG_NOCOPYERR_LONG	"nocopyerr"
+#define ARG_NOTIMEUPD_LONG	"notimeupd"
+#define ARG_NOPRINT_LONG	"noprint"
+#define ARG_UNLINK_LONG		"unlink"
+#define ARG_NODELERR_LONG	"nodelerr"
 
 #define DIRENTRY_JSON_TYPE_BLK		"blockdev"
 #define DIRENTRY_JSON_TYPE_CHR		"chardev"
@@ -80,6 +85,9 @@
 #define FILTER_FLAG_ATIME_EXACT		(1 << 9)
 #define FILTER_FLAG_ATIME_LESS		(1 << 10)
 #define FILTER_FLAG_ATIME_GREATER	(1 << 11)
+
+// short-hand macro to either return or exit on fatal errors depending on user config
+#define EXIT_OR_RETURN_CONFIGURABLE(ignoreError)	{ if(ignoreError) return; else exit(1); }
 
 struct Config
 {
@@ -107,6 +115,11 @@ struct Config
 		unsigned filterSizeAndTimeFlags; // FILTER_FLAG_..._{EXACT,LESS,GREATER} flags
 	} filterSizeAndTime;
 	std::string copyDestDir; // target dir for file/dir copies
+	bool ignoreCopyErrors {false}; // ignore copy errors
+	bool printEntriesDisabled {false}; // true to disable print of discovered entries
+	bool unlinkFiles {false}; // true to unlink all discovered files (not dirs)
+	bool ignoreUnlinkErrors {false}; // ignore unlink errors
+	bool copyTimeUpdate {true}; // update atime/mtime when copying files
 } config;
 
 struct State
@@ -531,13 +544,30 @@ void copyEntry(const std::string& entryPath, const struct dirent* dirEntry,
 
 	if(S_ISDIR(statBuf->st_mode) )
 	{ // create directory
-		int mkRes = mkdir(destPath.c_str(), S_IRWXU | S_IRWXG | S_IROTH | S_IXOTH);
-		if(mkRes && (errno != EEXIST) )
+		int mkRes = mkdir(destPath.c_str(),
+				(statBuf->st_mode & 0777) | ( S_IRUSR | S_IWUSR | S_IXUSR) ); // user always rwx
+		if( (mkRes == -1) && (errno != EEXIST) )
 		{
 			fprintf(stderr, "Failed to create dir: %s; Error: %s\n",
 				destPath.c_str(), strerror(errno) );
 
 			statistics.numErrors++;
+
+			EXIT_OR_RETURN_CONFIGURABLE(config.ignoreCopyErrors);
+		}
+
+		if(config.copyTimeUpdate)
+		{ // update timestamps
+			struct timespec newTimes[2] = {statBuf->st_atim, statBuf->st_mtim};
+
+			int updateTimeRes = utimensat(AT_FDCWD, destPath.c_str(), newTimes, 0);
+			if(updateTimeRes == -1)
+			{
+				fprintf(stderr, "Failed to update timestamps of copy destination dir: %s; "
+					"Error: %s\n", destPath.c_str(), strerror(errno) );
+
+				statistics.numErrors++;
+			}
 		}
 	}
 	else
@@ -550,6 +580,7 @@ void copyEntry(const std::string& entryPath, const struct dirent* dirEntry,
 		{
 			fprintf(stderr, "Failed to allocate memory buffer for symlink copy. Alloc size: %u\n",
 				bufSize);
+
 			exit(1);
 		}
 
@@ -561,7 +592,8 @@ void copyEntry(const std::string& entryPath, const struct dirent* dirEntry,
 
 			statistics.numErrors++;
 			free(buf);
-			return;
+
+			EXIT_OR_RETURN_CONFIGURABLE(config.ignoreCopyErrors);
 		}
 		else
 		if(readRes == -1)
@@ -571,7 +603,8 @@ void copyEntry(const std::string& entryPath, const struct dirent* dirEntry,
 
 			statistics.numErrors++;
 			free(buf);
-			return;
+
+			EXIT_OR_RETURN_CONFIGURABLE(config.ignoreCopyErrors);
 		}
 
 		// readlink() does not zero-terminate the string in buf
@@ -581,6 +614,7 @@ void copyEntry(const std::string& entryPath, const struct dirent* dirEntry,
 		if( (linkRes == -1) && (errno == EEXIST) )
 		{ // symlink() can't overwrite existing file, so unlink and try again
 			unlink(destPath.c_str() );
+
 			linkRes = symlink(buf, destPath.c_str() );
 		}
 
@@ -591,7 +625,22 @@ void copyEntry(const std::string& entryPath, const struct dirent* dirEntry,
 
 			statistics.numErrors++;
 			free(buf);
-			return;
+
+			EXIT_OR_RETURN_CONFIGURABLE(config.ignoreCopyErrors);
+		}
+
+		if(config.copyTimeUpdate)
+		{ // update timestamps
+			struct timespec newTimes[2] = {statBuf->st_atim, statBuf->st_mtim};
+
+			int updateTimeRes = utimensat(AT_FDCWD, destPath.c_str(), newTimes, AT_SYMLINK_NOFOLLOW);
+			if(updateTimeRes == -1)
+			{
+				fprintf(stderr, "Failed to update timestamps of copy destination symlink: %s; "
+					"Error: %s\n", destPath.c_str(), strerror(errno) );
+
+				statistics.numErrors++;
+			}
 		}
 
 		// symlink copy done => cleanup
@@ -600,18 +649,20 @@ void copyEntry(const std::string& entryPath, const struct dirent* dirEntry,
 	else
 	if(S_ISREG(statBuf->st_mode) )
 	{ // copy regular file
-		int sourceFD = open(entryPath.c_str(), O_RDONLY);
+		// (no atime update simiar to "cp -a" behavior)
+		int sourceFD = open(entryPath.c_str(), O_RDONLY | O_NOATIME);
 		if(sourceFD == -1)
 		{
 			fprintf(stderr, "Failed to open copy source file for reading: %s; Error: %s\n",
 				entryPath.c_str(), strerror(errno) );
 
 			statistics.numErrors++;
-			return;
+
+			EXIT_OR_RETURN_CONFIGURABLE(config.ignoreCopyErrors);
 		}
 
 		int destFD = open(destPath.c_str(), O_CREAT | O_TRUNC | O_WRONLY,
-			S_IRWXU | S_IRWXG | S_IROTH | S_IXOTH);
+			(statBuf->st_mode & 0777) | ( S_IRUSR | S_IWUSR) ); // user/owner can always read+write
 		if(destFD == -1)
 		{
 			fprintf(stderr, "Failed to open copy destination file for writing: %s; Error: %s\n",
@@ -619,7 +670,8 @@ void copyEntry(const std::string& entryPath, const struct dirent* dirEntry,
 
 			statistics.numErrors++;
 			close(sourceFD);
-			return;
+
+			EXIT_OR_RETURN_CONFIGURABLE(config.ignoreCopyErrors);
 		}
 
 		const unsigned bufSize = 4*1024*1024; // 4MiB copy buffer
@@ -630,6 +682,7 @@ void copyEntry(const std::string& entryPath, const struct dirent* dirEntry,
 		{
 			fprintf(stderr, "Failed to allocate memory buffer for file copy. Alloc size: %u\n",
 				bufSize);
+
 			exit(1);
 		}
 
@@ -649,7 +702,8 @@ void copyEntry(const std::string& entryPath, const struct dirent* dirEntry,
 				close(sourceFD);
 				close(destFD);
 				free(buf);
-				return;
+
+				EXIT_OR_RETURN_CONFIGURABLE(config.ignoreCopyErrors);
 			}
 
 			ssize_t writeRes = write(destFD, buf, readRes);
@@ -662,7 +716,8 @@ void copyEntry(const std::string& entryPath, const struct dirent* dirEntry,
 				close(sourceFD);
 				close(destFD);
 				free(buf);
-				return;
+
+				EXIT_OR_RETURN_CONFIGURABLE(config.ignoreCopyErrors);
 			}
 			else
 			if(readRes != writeRes)
@@ -675,10 +730,25 @@ void copyEntry(const std::string& entryPath, const struct dirent* dirEntry,
 				close(sourceFD);
 				close(destFD);
 				free(buf);
-				return;
+
+				EXIT_OR_RETURN_CONFIGURABLE(config.ignoreCopyErrors);
 			}
 
 			statistics.numBytesCopied += writeRes;
+		}
+
+		if(config.copyTimeUpdate)
+		{ // update timestamps
+			struct timespec newTimes[2] = {statBuf->st_atim, statBuf->st_mtim};
+
+			int updateTimeRes = futimens(destFD, newTimes);
+			if(updateTimeRes == -1)
+			{
+				fprintf(stderr, "Failed to update timestamps of copy destination file: %s; "
+					"Error: %s\n", destPath.c_str(), strerror(errno) );
+
+				statistics.numErrors++;
+			}
 		}
 
 		// regular file copy complete => cleanup
@@ -694,6 +764,35 @@ void copyEntry(const std::string& entryPath, const struct dirent* dirEntry,
 	}
 }
 
+/**
+ * Unlink entry if it's not a directory.
+ */
+void unlinkEntry(const std::string& entryPath, const struct dirent* dirEntry,
+	const struct stat* statBuf)
+{
+	if(!config.unlinkFiles)
+		return;
+
+	// config.statAll is forced to true when config.unlinkFiles is set
+
+	if(S_ISDIR(statBuf->st_mode) )
+		return;
+
+	if(config.printVerbose)
+		fprintf(stderr, "Unlinking: %s\n", entryPath.c_str() );
+
+	int unlinkRes = unlink(entryPath.c_str() );
+	if(unlinkRes == -1)
+	{
+		fprintf(stderr, "Failed to unlink file: %s; Error: %s\n",
+			entryPath.c_str(), strerror(errno) );
+
+		statistics.numErrors++;
+
+		EXIT_OR_RETURN_CONFIGURABLE(config.ignoreUnlinkErrors);
+	}
+
+}
 /**
  * Print entry either as plain newline-terminated string to console or in JSON format, depending
  * on config values.
@@ -728,7 +827,14 @@ void printEntry(const std::string& entryPath, const struct dirent* dirEntry,
 
 	copyEntry(entryPath, dirEntry, statBuf);
 
+	// unlink
+
+	unlinkEntry(entryPath, dirEntry, statBuf);
+
 	// print entry
+
+	if(config.printEntriesDisabled)
+		return;
 
 	if(!config.printJSON)
 	{ // simple print of path
@@ -1074,7 +1180,8 @@ void printUsageAndExit()
 	std::cout << "                      (Just for testing, does not change the result set.)" << std::endl;
 	std::cout << "  --copyto PATH     - Copy discovered files and dirs to this directory." << std::endl;
 	std::cout << "                      Only regular files, dirs and symlinks will be copied." << std::endl;
-	std::cout << "                      Hardlinks will not be preserved. Source has to be a dir." << std::endl;
+	std::cout << "                      Hardlinks will not be preserved. Source and" << std::endl;
+	std::cout << "                      destination have to be dirs." << std::endl;
 	std::cout << "  --ctime NUM       - ctime filter based on number of days in the past." << std::endl;
 	std::cout << "                      +/- prefix to match older or more recent values." << std::endl;
 	std::cout << "  --godeep NUM      - Threshold to switch from breadth to depth search." << std::endl;
@@ -1088,7 +1195,9 @@ void printUsageAndExit()
 	std::cout << "  --mtime NUM       - mtime filter based on number of days in the past." << std::endl;
 	std::cout << "                      +/- prefix to match older or more recent values." << std::endl;
 	std::cout << "  --name PATTERN    - Filter on filenames (not full path or dirnames)." << std::endl;
+	std::cout << "  --noprint         - Do not print names of discovered files and dirs." << std::endl;
 	std::cout << "  --nosummary       - Disable summary output to stderr." << std::endl;
+	std::cout << "  --notimeupd       - Do not update atime/mtime of copied files." << std::endl;
 	std::cout << "  --path PATTERN    - Filter on path of discovered entries." << std::endl;
 	std::cout << "  --print0          - Terminate printed entries with null instead of newline." << std::endl;
 	std::cout << "                      (Hint: This is goes nicely with \"xargs -0\".)" << std::endl;
@@ -1100,6 +1209,7 @@ void printUsageAndExit()
 	std::cout << "  --stat            - Query attributes of all discovered files & dirs." << std::endl;
 	std::cout << "  -t, --threads NUM - Number of scan threads. (Default: 16)" << std::endl;
 	std::cout << "  --type TYPE       - Search type. 'f' for regular files, 'd' for directories." << std::endl;
+	std::cout << "  --unlink          - Delete discovered files, not dirs." << std::endl;
 	std::cout << "  --verbose         - Enable verbose output." << std::endl;
 	std::cout << "  --version         - Print version and exit." << std::endl;
 	std::cout << std::endl;
@@ -1290,12 +1400,17 @@ void parseArguments(int argc, char **argv)
 				{ ARG_JSON_LONG, no_argument, 0, 0 },
 				{ ARG_MAXDEPTH_LONG, required_argument, 0, 0 },
 				{ ARG_NAME_LONG, required_argument, 0, 0 },
+				{ ARG_NOCOPYERR_LONG, no_argument, 0, 0 },
+				{ ARG_NODELERR_LONG, no_argument, 0, 0 },
+				{ ARG_NOPRINT_LONG, no_argument, 0, 0 },
 				{ ARG_NOSUMMARY_LONG, no_argument, 0, 0 },
+				{ ARG_NOTIMEUPD_LONG, no_argument, 0, 0 },
 				{ ARG_PATH_LONG, required_argument, 0, 0 },
 				{ ARG_PRINT0_LONG, no_argument, 0, 0 },
 				{ ARG_SEARCHTYPE_LONG, required_argument, 0, 0 },
 				{ ARG_STAT_LONG, no_argument, 0, 0 },
 				{ ARG_THREADS_LONG, required_argument, 0, ARG_THREADS_SHORT },
+				{ ARG_UNLINK_LONG, no_argument, 0, 0 },
 				{ ARG_VERBOSE_LONG, no_argument, 0, 0 },
 				{ ARG_VERSION_LONG, no_argument, 0, 0 },
 				{ 0, 0, 0, 0 } // all-zero is the terminating element
@@ -1354,8 +1469,20 @@ void parseArguments(int argc, char **argv)
 				if(ARG_NAME_LONG == currentOptionName)
 					config.nameFilter = optarg;
 				else
+				if(ARG_NOCOPYERR_LONG == currentOptionName)
+					config.ignoreCopyErrors = true;
+				else
+				if(ARG_NODELERR_LONG == currentOptionName)
+					config.ignoreUnlinkErrors = true;
+				else
+				if(ARG_NOPRINT_LONG == currentOptionName)
+					config.printEntriesDisabled = true;
+				else
 				if(ARG_NOSUMMARY_LONG == currentOptionName)
 					config.printSummary = false;
+				else
+				if(ARG_NOTIMEUPD_LONG == currentOptionName)
+					config.copyTimeUpdate = false;
 				else
 				if(ARG_PATH_LONG == currentOptionName)
 					config.pathFilter = optarg;
@@ -1368,6 +1495,12 @@ void parseArguments(int argc, char **argv)
 				else
 				if(ARG_STAT_LONG == currentOptionName)
 					config.statAll = true;
+				else
+				if(ARG_UNLINK_LONG == currentOptionName)
+				{
+					config.unlinkFiles = true;
+					config.statAll = true; // to be able to rely on type in statBuf for dir vs file
+				}
 				else
 				if(ARG_VERBOSE_LONG == currentOptionName)
 					config.printVerbose = true;
