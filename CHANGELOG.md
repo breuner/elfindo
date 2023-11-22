@@ -1,5 +1,13 @@
 # Changelog of elfindo
 
+## v0.9.4 (Nov 11, 2023)
+
+### New Features & Enhancements
+* Option "--name PATTERN" may now be given multiple times to match any of the given patterns.
+
+### Contributors
+* Thanks to Ido Szargel for helpful comments and suggestions.
+
 ## v0.9.2 (Dec 27, 2022)
 
 ### New Features & Enhancements

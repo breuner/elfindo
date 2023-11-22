@@ -34,6 +34,7 @@
 #include <time.h>
 #include <thread>
 #include <unistd.h>
+#include <vector>
 
 
 #define ARG_FILTER_ATIME	"atime"
@@ -86,6 +87,8 @@
 #define FILTER_FLAG_ATIME_LESS		(1 << 10)
 #define FILTER_FLAG_ATIME_GREATER	(1 << 11)
 
+typedef std::vector<std::string> StringVec;
+
 // short-hand macro to either return or exit on fatal errors depending on user config
 #define EXIT_OR_RETURN_CONFIGURABLE(ignoreError)	{ if(ignoreError) return; else exit(1); }
 
@@ -103,7 +106,7 @@ struct Config
 	std::list<std::string> scanPaths; // user-provided paths to scan
 	char searchType {0}; // search type. 0=all, 'f'=reg_files, 'd'=dirs.
 	bool print0 {false}; // whether to terminate entry names with '\0' instead '\n'
-	std::string nameFilter; // filter on filename (in contrast to full path)
+	StringVec nameFilterVec; // or-filter on multiple filenames (in contrast to full path)
 	std::string pathFilter; // filter on full path
 	struct
 	{
@@ -422,7 +425,7 @@ bool filterPrintEntryByType(const std::string& entryPath, const struct dirent* d
 bool filterPrintEntryByName(const std::string& entryPath, const struct dirent* dirEntry,
 	const struct stat* statBuf)
 {
-	if(config.nameFilter.empty() )
+	if(config.nameFilterVec.empty() )
 		return true; // no filter defined by user => always passes
 
 	bool isFile =
@@ -432,11 +435,17 @@ bool filterPrintEntryByName(const std::string& entryPath, const struct dirent* d
 	if(!isFile)
 		return false; // anything that's not a file can't match
 
-	int matchRes = fnmatch(config.nameFilter.c_str(),
-		std::filesystem::path(entryPath).filename().string().c_str(), 0 /* flags */);
+	// check whether any of the given filter names matches
 
-	if(!matchRes)
-		return true; // we have a match
+	std::string currentFilename = std::filesystem::path(entryPath).filename().string();
+
+	for(std::string& nameFilter : config.nameFilterVec)
+	{
+		int matchRes = fnmatch(nameFilter.c_str(), currentFilename.c_str(), 0 /* flags */);
+
+		if(!matchRes)
+			return true; // we have a match
+	}
 
 	return false;
 }
@@ -1195,10 +1204,15 @@ void printUsageAndExit()
 	std::cout << "  --mtime NUM       - mtime filter based on number of days in the past." << std::endl;
 	std::cout << "                      +/- prefix to match older or more recent values." << std::endl;
 	std::cout << "  --name PATTERN    - Filter on filenames (not full path or dirnames)." << std::endl;
+	std::cout << "                      Pattern may contain '*' & '?' as wildcards." << std::endl;
+	std::cout << "                      This parameter can be given multiple times, in which case" << std::endl;
+	std::cout << "                      filenames machting any of the given patterns will pass" << std::endl;
+	std::cout << "                      the filter." << std::endl;
 	std::cout << "  --noprint         - Do not print names of discovered files and dirs." << std::endl;
 	std::cout << "  --nosummary       - Disable summary output to stderr." << std::endl;
 	std::cout << "  --notimeupd       - Do not update atime/mtime of copied files." << std::endl;
 	std::cout << "  --path PATTERN    - Filter on path of discovered entries." << std::endl;
+	std::cout << "                      Pattern may contain '*' & '?' as wildcards." << std::endl;
 	std::cout << "  --print0          - Terminate printed entries with null instead of newline." << std::endl;
 	std::cout << "                      (Hint: This is goes nicely with \"xargs -0\".)" << std::endl;
 	std::cout << "  --size NUM        - Size filter." << std::endl;
@@ -1467,7 +1481,7 @@ void parseArguments(int argc, char **argv)
 					config.maxDirDepth = std::atoi(optarg);
 				else
 				if(ARG_NAME_LONG == currentOptionName)
-					config.nameFilter = optarg;
+					config.nameFilterVec.push_back(optarg);
 				else
 				if(ARG_NOCOPYERR_LONG == currentOptionName)
 					config.ignoreCopyErrors = true;
