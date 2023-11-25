@@ -47,6 +47,7 @@
 #define ARG_MAXDEPTH_LONG	"maxdepth"
 #define ARG_FILTER_MTIME	"mtime"
 #define ARG_NAME_LONG		"name"
+#define ARG_NEWER_LONG		"newer"
 #define ARG_NOSUMMARY_LONG	"nosummary"
 #define ARG_PATH_LONG		"path"
 #define ARG_PRINT0_LONG		"print0"
@@ -1208,6 +1209,7 @@ void printUsageAndExit()
 	std::cout << "                      This parameter can be given multiple times, in which case" << std::endl;
 	std::cout << "                      filenames machting any of the given patterns will pass" << std::endl;
 	std::cout << "                      the filter." << std::endl;
+	std::cout << "  --newer PATH      - Filter based on more recent mtime than given path." << std::endl;
 	std::cout << "  --noprint         - Do not print names of discovered files and dirs." << std::endl;
 	std::cout << "  --nosummary       - Disable summary output to stderr." << std::endl;
 	std::cout << "  --notimeupd       - Do not update atime/mtime of copied files." << std::endl;
@@ -1382,6 +1384,34 @@ void parseExactLessGreaterVal(std::string userVal,
 }
 
 /**
+ * Get mtime of given file and set newer mtime filter.
+ */
+void setFileNewerFilterConfig(const char* path)
+{
+	config.statAll = true; // need stat() info for time filtering
+
+	struct stat statBuf;
+
+	int statRes = stat(path, &statBuf);
+
+	if(statRes)
+	{
+		fprintf(stderr, "Failed to get attributes of path: %s; Error: %s\n",
+			path, strerror(errno) );
+
+		exit(1);
+	}
+
+	if(config.printVerbose)
+		fprintf(stderr, "Setting newer mtime filter based on given path: %s; "
+			"Seconds since epoch: %" PRIu64 "\n",
+			path, (uint64_t)statBuf.st_mtim.tv_sec);
+
+	config.filterSizeAndTime.filterSizeAndTimeFlags |= FILTER_FLAG_MTIME_GREATER;
+	config.filterSizeAndTime.mtimeGreater = (uint64_t)statBuf.st_mtim.tv_sec;
+}
+
+/**
  * Parse commmand line arguments and set corresponding config values.
  */
 void parseArguments(int argc, char **argv)
@@ -1414,6 +1444,7 @@ void parseArguments(int argc, char **argv)
 				{ ARG_JSON_LONG, no_argument, 0, 0 },
 				{ ARG_MAXDEPTH_LONG, required_argument, 0, 0 },
 				{ ARG_NAME_LONG, required_argument, 0, 0 },
+				{ ARG_NEWER_LONG, required_argument, 0, 0 },
 				{ ARG_NOCOPYERR_LONG, no_argument, 0, 0 },
 				{ ARG_NODELERR_LONG, no_argument, 0, 0 },
 				{ ARG_NOPRINT_LONG, no_argument, 0, 0 },
@@ -1482,6 +1513,9 @@ void parseArguments(int argc, char **argv)
 				else
 				if(ARG_NAME_LONG == currentOptionName)
 					config.nameFilterVec.push_back(optarg);
+				else
+				if(ARG_NEWER_LONG == currentOptionName)
+					setFileNewerFilterConfig(optarg);
 				else
 				if(ARG_NOCOPYERR_LONG == currentOptionName)
 					config.ignoreCopyErrors = true;
@@ -1601,7 +1635,7 @@ int main(int argc, char** argv)
 		{
 			int errnoBackup = errno;
 
-			fprintf(stderr, "Failed to open dir: %s; Error: %s\n",
+			fprintf(stderr, "Failed to get attributes for path: %s; Error: %s\n",
 				currentPath.c_str(), strerror(errno) );
 
 			retVal = EXIT_FAILURE;

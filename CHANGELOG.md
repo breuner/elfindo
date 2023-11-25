@@ -1,5 +1,10 @@
 # Changelog of elfindo
 
+## v0.9.5 (work in progress)
+
+### New Features & Enhancements
+* Option "--newer PATH" to filter based on mtime of given path.
+
 ## v0.9.4 (Nov 11, 2023)
 
 ### New Features & Enhancements
