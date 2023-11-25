@@ -1012,16 +1012,16 @@ void scan(std::string path, const unsigned short dirDepth)
 		struct dirent* dirEntry = readdir(dirStream);
 		if(!dirEntry)
 		{
-			if(!errno)
+			if(errno)
 			{
-				closedir(dirStream);
-				return;
+				fprintf(stderr, "Failed to read from dir: %s; Error: %s\n",
+					path.c_str(), strerror(errno) );
+
+				statistics.numErrors++;
 			}
 
-			fprintf(stderr, "Failed to read from dir: %s; Error: %s\n",
-				path.c_str(), strerror(errno) );
-
-			statistics.numErrors++;
+			closedir(dirStream);
+			return;
 		}
 
 		if(!strcmp(dirEntry->d_name, ".") || !strcmp(dirEntry->d_name, "..") )

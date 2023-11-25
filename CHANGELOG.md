@@ -5,6 +5,9 @@
 ### New Features & Enhancements
 * Option "--newer PATH" to filter based on mtime of given path.
 
+### Fixes
+* Fixed potential file descriptor leak when reading dir contents fails.
+
 ## v0.9.4 (Nov 11, 2023)
 
 ### New Features & Enhancements
