@@ -39,31 +39,32 @@
 
 #define ARG_FILTER_ATIME	"atime"
 #define ARG_ACLCHECK_LONG	"aclcheck"
+#define ARG_COPYDEST_LONG	"copyto"
 #define ARG_FILTER_CTIME	"ctime"
+#define ARG_EXEC_LONG		"exec"
 #define ARG_GODEEP_LONG		"godeep"
-#define ARG_HELP_LONG		"help"
 #define ARG_HELP_SHORT		'h'
+#define ARG_HELP_LONG		"help"
 #define ARG_JSON_LONG		"json"
 #define ARG_MAXDEPTH_LONG	"maxdepth"
 #define ARG_FILTER_MTIME	"mtime"
 #define ARG_NAME_LONG		"name"
 #define ARG_NEWER_LONG		"newer"
+#define ARG_NOCOPYERR_LONG	"nocopyerr"
+#define ARG_NODELERR_LONG	"nodelerr"
+#define ARG_NOPRINT_LONG	"noprint"
 #define ARG_NOSUMMARY_LONG	"nosummary"
+#define ARG_NOTIMEUPD_LONG	"notimeupd"
 #define ARG_PATH_LONG		"path"
 #define ARG_PRINT0_LONG		"print0"
 #define ARG_FILTER_SIZE		"size"
 #define ARG_STAT_LONG		"stat"
-#define ARG_THREADS_LONG	"threads"
 #define ARG_THREADS_SHORT	't'
+#define ARG_THREADS_LONG	"threads"
 #define ARG_SEARCHTYPE_LONG	"type"
+#define ARG_UNLINK_LONG		"unlink"
 #define ARG_VERBOSE_LONG	"verbose"
 #define ARG_VERSION_LONG	"version"
-#define ARG_COPYDEST_LONG	"copyto"
-#define ARG_NOCOPYERR_LONG	"nocopyerr"
-#define ARG_NOTIMEUPD_LONG	"notimeupd"
-#define ARG_NOPRINT_LONG	"noprint"
-#define ARG_UNLINK_LONG		"unlink"
-#define ARG_NODELERR_LONG	"nodelerr"
 
 #define DIRENTRY_JSON_TYPE_BLK		"blockdev"
 #define DIRENTRY_JSON_TYPE_CHR		"chardev"
@@ -88,10 +89,18 @@
 #define FILTER_FLAG_ATIME_LESS		(1 << 10)
 #define FILTER_FLAG_ATIME_GREATER	(1 << 11)
 
+#define EXEC_ARG_PATH_PLACEHOLDER	"{}"
+#define EXEC_ARG_TERMINATOR			";"
+
 typedef std::vector<std::string> StringVec;
 
 // short-hand macro to either return or exit on fatal errors depending on user config
 #define EXIT_OR_RETURN_CONFIGURABLE(ignoreError)	{ if(ignoreError) return; else exit(1); }
+
+struct ExternalProgExec
+{
+	StringVec cmdLineStrVec; // cmd and args if exec given by user, one of them being {} for path
+};
 
 struct Config
 {
@@ -124,6 +133,7 @@ struct Config
 	bool unlinkFiles {false}; // true to unlink all discovered files (not dirs)
 	bool ignoreUnlinkErrors {false}; // ignore unlink errors
 	bool copyTimeUpdate {true}; // update atime/mtime when copying files
+	ExternalProgExec exec; // config to execute external prog for each disovered entry
 } config;
 
 struct State
@@ -535,6 +545,51 @@ bool filterPrintEntryBySizeOrTime(const std::string& entryPath, const struct dir
 }
 
 /**
+ * Replace all occurrences of EXEC_ARG_PATH_PLACEHOLDER in "subject" string with the given "path"
+ * string.
+ */
+void replacePathPlaceholerWithPath(std::string& subject, const std::string& path)
+{
+    size_t pos = 0;
+
+    while( (pos = subject.find(EXEC_ARG_PATH_PLACEHOLDER, pos) ) != std::string::npos)
+    {
+         subject.replace(pos, strlen(EXEC_ARG_PATH_PLACEHOLDER), path);
+         pos += path.length();
+    }
+}
+
+/**
+ * Execute user-given system command for discovered entry.
+ */
+void execSystemCommand(const std::string& entryPath)
+{
+	if(config.exec.cmdLineStrVec.empty() )
+		return; // nothing to do
+
+	std::string commandStr;
+
+	// add executable
+	commandStr.append("'");
+	commandStr.append(config.exec.cmdLineStrVec[0] );
+	commandStr.append("' ");
+
+	// add args and replace placeholder with path
+	for(size_t i=1; i < config.exec.cmdLineStrVec.size(); i++)
+	{
+		std::string argStr(config.exec.cmdLineStrVec[i] );
+
+		replacePathPlaceholerWithPath(argStr, entryPath);
+
+		commandStr.append("'");
+		commandStr.append(argStr);
+		commandStr.append("' ");
+	}
+
+	std::system(commandStr.c_str() );
+}
+
+/**
  * Copy entry if it's a regular file, dir or symlink; skip others.
  * This won't preserve hardlinks.
  */
@@ -801,8 +856,8 @@ void unlinkEntry(const std::string& entryPath, const struct dirent* dirEntry,
 
 		EXIT_OR_RETURN_CONFIGURABLE(config.ignoreUnlinkErrors);
 	}
-
 }
+
 /**
  * Print entry either as plain newline-terminated string to console or in JSON format, depending
  * on config values.
@@ -832,6 +887,10 @@ void printEntry(const std::string& entryPath, const struct dirent* dirEntry,
 
 	if(!filterPrintEntryBySizeOrTime(entryPath, dirEntry, statBuf) )
 		return;
+
+	// exec system command on entry
+
+	execSystemCommand(entryPath);
 
 	// copy
 
@@ -1194,6 +1253,11 @@ void printUsageAndExit()
 	std::cout << "                      destination have to be dirs." << std::endl;
 	std::cout << "  --ctime NUM       - ctime filter based on number of days in the past." << std::endl;
 	std::cout << "                      +/- prefix to match older or more recent values." << std::endl;
+	std::cout << "  --exec CMD ARGs ; - Execute the given system command and arguments for each" << std::endl;
+	std::cout << "                      discovered file/dir. The string '{}' in any arg will get" << std::endl;
+	std::cout << "                      replaced by the current file/dir path. The argument ';'" << std::endl;
+	std::cout << "                      marks the end of the command line to run." << std::endl;
+	std::cout << "                      (Example: elfindo --exec ls -lhd '{}' \\; --type d)" << std::endl;
 	std::cout << "  --godeep NUM      - Threshold to switch from breadth to depth search." << std::endl;
 	std::cout << "                      (Default: number of scan threads)" << std::endl;
 	std::cout << "  --json            - Print entries in JSON format. Each file/dir is a" << std::endl;
@@ -1412,9 +1476,73 @@ void setFileNewerFilterConfig(const char* path)
 }
 
 /**
+ * Remove an argument from the command line argv and decrease argc. Remove means that everything
+ * after this element will be shifted to the front.
+ *
+ * @param deleteIdx zero-based index of element to be deleted.
+ */
+void removeCmdLineArg(int deleteIdx, int& argc, char** argv)
+{
+	for(int i=(deleteIdx+1); i < argc; i++)
+	{
+		argv[i-1] = argv[i];
+	}
+
+	argc--;
+
+	argv[argc] = NULL; // as per definition in C standard
+}
+
+/**
+ * Parse arguments to find ARG_EXEC_LONG and move following args until ARG_EXEC_TERMINATOR to
+ * config.
+ *
+ * Note: ARG_EXEC_LONG is intentionally not removed to not confuse the options parser loop from
+ * which this method might get called.
+ */
+void parseExecArguments(int& argc, char** argv)
+{
+	for(int argIdx=1; argIdx < argc; argIdx++)
+	{
+		if( (argv[argIdx] == std::string("-" ARG_EXEC_LONG) ) ||
+			(argv[argIdx] == std::string("--" ARG_EXEC_LONG) ) )
+		{ // we found exec start, now take all following args until EXEC_ARG_TERMINATOR
+
+			int execArgsIdx = argIdx+1;
+
+			// (note: no idx advance in loop because removeCmdLineArg removes current elem)
+
+			while(execArgsIdx < argc)
+			{
+				// (note: "!empty" below because first arg has to be name of executable)
+				if(!config.exec.cmdLineStrVec.empty() &&
+					(argv[execArgsIdx] == std::string(EXEC_ARG_TERMINATOR) ) )
+				{ // we found the args terminator
+					removeCmdLineArg(execArgsIdx, argc, argv);
+					return; // terminator found, so we're done
+				}
+
+				// executable or normal arg => just move over to exec config
+				config.exec.cmdLineStrVec.push_back(argv[execArgsIdx] );
+				removeCmdLineArg(execArgsIdx, argc, argv);
+			}
+
+			if(execArgsIdx == argc)
+			{
+				fprintf(stderr, "Missing terminator ';' in 'exec' arguments list\n");
+				exit(1);
+			}
+
+			// we found and processed the 'exec' parameters, so we're done here
+			return;
+		}
+	}
+}
+
+/**
  * Parse commmand line arguments and set corresponding config values.
  */
-void parseArguments(int argc, char **argv)
+void parseArguments(int argc, char** argv)
 {
 	for( ; ; )
 	{
@@ -1435,6 +1563,7 @@ void parseArguments(int argc, char **argv)
 		{
 				{ ARG_ACLCHECK_LONG, no_argument, 0, 0 },
 				{ ARG_COPYDEST_LONG, required_argument, 0, 0 },
+				{ ARG_EXEC_LONG, no_argument, 0, 0 },
 				{ ARG_FILTER_ATIME, required_argument, 0, 0 },
 				{ ARG_FILTER_CTIME, required_argument, 0, 0 },
 				{ ARG_FILTER_MTIME, required_argument, 0, 0 },
@@ -1475,7 +1604,7 @@ void parseArguments(int argc, char **argv)
 		if(currentOption == -1)
 			break; // done; all options parsed
 
-		switch (currentOption)
+		switch(currentOption)
 		{
 			case 0: // long option
 			{
@@ -1488,6 +1617,13 @@ void parseArguments(int argc, char **argv)
 				{
 					config.copyDestDir = optarg;
 					config.statAll = true; // to be able to rely on type in statBuf and for mtime
+				}
+				else
+				if(ARG_EXEC_LONG == currentOptionName)
+				{
+					/* note: this removes the args after "exec" including the terminator from argv
+						to prevent them from getting caught by the non-option arg parser below */
+					parseExecArguments(argc, argv);
 				}
 				else
 				if(ARG_FILTER_ATIME == currentOptionName)

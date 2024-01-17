@@ -3,7 +3,11 @@
 ## v0.9.5 (work in progress)
 
 ### New Features & Enhancements
-* Option "--newer PATH" to filter based on mtime of given path.
+* New option "--newer PATH" to filter based on mtime of given path.
+* New option "--exec" to execute arbritrary system commands for each discovered file/dir.
+
+### Contributors
+* Thanks to Ido Szargel for helpful comments and suggestions.
 
 ### Fixes
 * Fixed potential file descriptor leak when reading dir contents fails.
