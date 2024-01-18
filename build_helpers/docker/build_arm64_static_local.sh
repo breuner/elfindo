@@ -17,15 +17,14 @@ PACKAGE_NAME=$(cat build_helpers/packagename)
 PACKAGE_VERSION=$(make version)
 FIND_EXE_NAME=$(cat build_helpers/findexename)
 CONTAINER_NAME="${PACKAGE_NAME}-static"
-IMAGE_NAME="alpine:3.14"
+IMAGE_NAME="alpine:3"
 
 docker rm $CONTAINER_NAME
 
 #docker pull $IMAGE_NAME && \
 docker run --platform linux/arm64 --name $CONTAINER_NAME --privileged -it -v $PWD:$PWD -w $PWD $IMAGE_NAME \
     sh -c "\
-    apk add bash build-base cmake gcc g++ git libexecinfo-dev make \
-        libexecinfo-static sudo tar && \
+    apk add bash build-base cmake gcc g++ git make sudo tar && \
     adduser -u $UID -D -H builduser && \
     sudo -u builduser make clean-all && \
     sudo -u builduser make -j $(nproc) \
