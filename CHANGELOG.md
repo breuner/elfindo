@@ -6,6 +6,9 @@
 * New option "--newer PATH" to filter based on mtime of given path.
 * New option "--exec" to execute arbritrary system commands for each discovered file/dir.
 
+### General Changes
+* Static builds now based on latest Alpine Linux 3.x instead of always 3.14.
+
 ### Contributors
 * Thanks to Ido Szargel for helpful comments and suggestions.
 

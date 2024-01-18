@@ -586,7 +586,11 @@ void execSystemCommand(const std::string& entryPath)
 		commandStr.append("' ");
 	}
 
-	std::system(commandStr.c_str() );
+	int sysRes = std::system(commandStr.c_str() );
+	if(sysRes)
+	{
+		// doesn't matter, this is just to mute the compiler warning about unused result of system()
+	}
 }
 
 /**
@@ -646,7 +650,7 @@ void copyEntry(const std::string& entryPath, const struct dirent* dirEntry,
 			fprintf(stderr, "Failed to allocate memory buffer for symlink copy. Alloc size: %u\n",
 				bufSize);
 
-			exit(1);
+			exit(EXIT_FAILURE);
 		}
 
 		ssize_t readRes = readlink(entryPath.c_str(), buf, bufSize);
@@ -748,7 +752,7 @@ void copyEntry(const std::string& entryPath, const struct dirent* dirEntry,
 			fprintf(stderr, "Failed to allocate memory buffer for file copy. Alloc size: %u\n",
 				bufSize);
 
-			exit(1);
+			exit(EXIT_FAILURE);
 		}
 
 		// copy file contents
@@ -1463,7 +1467,7 @@ void setFileNewerFilterConfig(const char* path)
 		fprintf(stderr, "Failed to get attributes of path: %s; Error: %s\n",
 			path, strerror(errno) );
 
-		exit(1);
+		exit(EXIT_FAILURE);
 	}
 
 	if(config.printVerbose)
@@ -1494,11 +1498,9 @@ void removeCmdLineArg(int deleteIdx, int& argc, char** argv)
 }
 
 /**
- * Parse arguments to find ARG_EXEC_LONG and move following args until ARG_EXEC_TERMINATOR to
- * config.
- *
- * Note: ARG_EXEC_LONG is intentionally not removed to not confuse the options parser loop from
- * which this method might get called.
+ * Parse arguments to find ARG_EXEC_LONG and copy all following args until excluding
+ * ARG_EXEC_TERMINATOR to config. ARG_EXEC_LONG and following args until including
+ * ARG_EXEC_TERMINATOR will be removed from argv & argc.
  */
 void parseExecArguments(int& argc, char** argv)
 {
@@ -1507,8 +1509,10 @@ void parseExecArguments(int& argc, char** argv)
 		if( (argv[argIdx] == std::string("-" ARG_EXEC_LONG) ) ||
 			(argv[argIdx] == std::string("--" ARG_EXEC_LONG) ) )
 		{ // we found exec start, now take all following args until EXEC_ARG_TERMINATOR
+			int execArgsIdx = argIdx;
 
-			int execArgsIdx = argIdx+1;
+			// remove ARG_EXEC_LONG
+			removeCmdLineArg(argIdx, argc, argv);
 
 			// (note: no idx advance in loop because removeCmdLineArg removes current elem)
 
@@ -1530,7 +1534,7 @@ void parseExecArguments(int& argc, char** argv)
 			if(execArgsIdx == argc)
 			{
 				fprintf(stderr, "Missing terminator ';' in 'exec' arguments list\n");
-				exit(1);
+				exit(EXIT_FAILURE);
 			}
 
 			// we found and processed the 'exec' parameters, so we're done here
@@ -1544,6 +1548,11 @@ void parseExecArguments(int& argc, char** argv)
  */
 void parseArguments(int argc, char** argv)
 {
+	/* note: this removes the "exec" arg and all following up to the terminator from argv,
+	 	 because getopt_long_only() below can change order of arguments in argv */
+	parseExecArguments(argc, argv);
+
+
 	for( ; ; )
 	{
 		/* struct option:
@@ -1592,6 +1601,7 @@ void parseArguments(int argc, char** argv)
 
 		int longOptionIndex = 0;
 
+		// warning: getopt_long_only can re-order arguments in argv
 		/* currentOption:
 		   * for short opts: the option character
 		   * for long opts: they return val if flag (3rd val) is NULL, and 0 otherwise.
@@ -1621,9 +1631,11 @@ void parseArguments(int argc, char** argv)
 				else
 				if(ARG_EXEC_LONG == currentOptionName)
 				{
-					/* note: this removes the args after "exec" including the terminator from argv
-						to prevent them from getting caught by the non-option arg parser below */
-					parseExecArguments(argc, argv);
+					// error out if exec is still found here, because it means it existed twice
+					// (actual exec arg handling intentionally happens before getopt_long_only() )
+					fprintf(stderr, "Aborting because '" ARG_EXEC_LONG "' option is given more "
+						"than once.\n");
+					exit(EXIT_FAILURE);
 				}
 				else
 				if(ARG_FILTER_ATIME == currentOptionName)
@@ -1703,7 +1715,7 @@ void parseArguments(int argc, char** argv)
 
 			case '?': // unknown (long or short) option
 				fprintf(stderr, "Aborting due to unrecognized option\n");
-				exit(1);
+				exit(EXIT_FAILURE);
 			break;
 
 			default:
@@ -1741,7 +1753,7 @@ void parseArguments(int argc, char** argv)
 	{
 		fprintf(stderr, "Only a single scan path may be given when "
 			"\"--" ARG_COPYDEST_LONG "\" is used\n");
-		exit(1);
+		exit(EXIT_FAILURE);
 	}
 
 }
