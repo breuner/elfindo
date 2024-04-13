@@ -586,10 +586,17 @@ void execSystemCommand(const std::string& entryPath)
 		commandStr.append("' ");
 	}
 
+	// flush is necessary for cases where stdout is not line-buffered, e.g. because it's not a tty.
+	fflush(stdout);
+
 	int sysRes = std::system(commandStr.c_str() );
-	if(sysRes)
+	if(WIFSIGNALED(sysRes) )
 	{
-		// doesn't matter, this is just to mute the compiler warning about unused result of system()
+		fprintf(stderr, "Aborting because exec command terminated on signal. "
+			"Signal: %d; Path: %s\n", (int)WTERMSIG(sysRes), entryPath.c_str() );
+
+		// note: we really need SIGTERM here, as SIGINT does not reliably kill running system cmds
+		kill(0, SIGTERM);
 	}
 }
 
@@ -866,8 +873,6 @@ void unlinkEntry(const std::string& entryPath, const struct dirent* dirEntry,
  * Print entry either as plain newline-terminated string to console or in JSON format, depending
  * on config values.
  *
- * This also contains the filtering and file/dir copying calls.
- *
  * @dirEntry does not have to be provided if config.printJSON==false. otherwise it only needs to be
  * 		provided if statBuf is not provided, but there are special cases where it can still be
  * 		NULL, e.g. because it's a user-given path argument.
@@ -878,34 +883,6 @@ void unlinkEntry(const std::string& entryPath, const struct dirent* dirEntry,
 void printEntry(const std::string& entryPath, const struct dirent* dirEntry,
 	const struct stat* statBuf)
 {
-	// filters
-
-	if(!filterPrintEntryByType(entryPath, dirEntry, statBuf) )
-		return;
-
-	if(!filterPrintEntryByName(entryPath, dirEntry, statBuf) )
-		return;
-
-	if(!filterPrintEntryByPath(entryPath, dirEntry, statBuf) )
-		return;
-
-	if(!filterPrintEntryBySizeOrTime(entryPath, dirEntry, statBuf) )
-		return;
-
-	// exec system command on entry
-
-	execSystemCommand(entryPath);
-
-	// copy
-
-	copyEntry(entryPath, dirEntry, statBuf);
-
-	// unlink
-
-	unlinkEntry(entryPath, dirEntry, statBuf);
-
-	// print entry
-
 	if(config.printEntriesDisabled)
 		return;
 
@@ -1048,6 +1025,51 @@ void printEntry(const std::string& entryPath, const struct dirent* dirEntry,
 }
 
 /**
+ * Filter discovered files/dirs and kick off processing of entries that came through the filters,
+ * such as printing to console, copying etc.
+ *
+ * @dirEntry does not have to be provided if config.printJSON==false. otherwise it only needs to be
+ * 		provided if statBuf is not provided, but there are special cases where it can still be
+ * 		NULL, e.g. because it's a user-given path argument.
+ * @statBuf does not have to be provided if config.printJSON==false. otherwise it only needs to be
+ * 		provided if dirEntry->d_type==DT_UNKNOWN or config.statAll==true, but there are special
+ * 		cases where it can still be NULL, e.g. if the stat() call returned an error.
+ */
+void processDiscoveredEntry(const std::string& entryPath, const struct dirent* dirEntry,
+	const struct stat* statBuf)
+{
+	// filters
+
+	if(!filterPrintEntryByType(entryPath, dirEntry, statBuf) )
+		return;
+
+	if(!filterPrintEntryByName(entryPath, dirEntry, statBuf) )
+		return;
+
+	if(!filterPrintEntryByPath(entryPath, dirEntry, statBuf) )
+		return;
+
+	if(!filterPrintEntryBySizeOrTime(entryPath, dirEntry, statBuf) )
+		return;
+
+	// print entry
+
+	printEntry(entryPath, dirEntry, statBuf);
+
+	// exec system command on entry
+
+	execSystemCommand(entryPath);
+
+	// copy
+
+	copyEntry(entryPath, dirEntry, statBuf);
+
+	// unlink
+
+	unlinkEntry(entryPath, dirEntry, statBuf);
+}
+
+/**
  * This is the main workhorse. It does a breadth scan while dir stack size is below
  * config.depthSearchStartThreshold, in which cases discovered dirs are put on stack so that other
  * threads can grab them. Otherwise it switches to recursive depth search.
@@ -1060,11 +1082,11 @@ void scan(std::string path, const unsigned short dirDepth)
 		statistics.numErrors++;
 
 		int errnoBackup = errno;
-		fprintf(stderr, "Failed to open dir: %s; Error: %s\n", path.c_str(), strerror(errno) );
+		fprintf(stderr, "Failed to open dir: '%s'; Error: %s\n", path.c_str(), strerror(errno) );
 		if( (errnoBackup == EACCES) || (errnoBackup == ENOENT) )
 			return;
 
-		kill(0, SIGINT);
+		kill(0, SIGTERM);
 	}
 
 	/* loop over contents of this entire directory - potentially recursively descending into subdirs
@@ -1124,7 +1146,7 @@ void scan(std::string path, const unsigned short dirDepth)
 
 			checkACLs(entryPath.c_str(), true);
 
-			printEntry(entryPath, dirEntry, statErrno ? NULL : &statBuf);
+			processDiscoveredEntry(entryPath, dirEntry, statErrno ? NULL : &statBuf);
 
 			if(dirDepth < config.maxDirDepth)
 			{
@@ -1140,7 +1162,7 @@ void scan(std::string path, const unsigned short dirDepth)
 
 			checkACLs(entryPath.c_str(), false);
 
-			printEntry(entryPath, dirEntry, statErrno ? NULL : &statBuf);
+			processDiscoveredEntry(entryPath, dirEntry, statErrno ? NULL : &statBuf);
 		}
 
 	}
@@ -1792,19 +1814,21 @@ int main(int argc, char** argv)
 				continue;
 
 			// terminate if error is not just EACCESS or ENOENT
-			kill(0, SIGINT);
+			kill(0, SIGTERM);
 		}
 
 		if(S_ISDIR(statBuf.st_mode) )
 		{ // this entry is a directory
-			printEntry(currentPath, NULL, &statBuf);
+			processDiscoveredEntry(currentPath, NULL, &statBuf);
 
 			if(currentDirDepth < config.maxDirDepth)
 			{
 				/* mimic gnu findutils behavior to preserve the given number of trailing slashes.
-					our scan() func will always add one slash, so we have to remove one here if any */
+					our scan() func will always add one slash, so we have to remove one here if
+					any */
 				std::string currentPathTrimmed(currentPath);
-				if(currentPathTrimmed[currentPathTrimmed.length()-1] == '/')
+				if( (currentPathTrimmed != "/") &&
+					(currentPathTrimmed[currentPathTrimmed.length()-1] == '/') )
 					currentPathTrimmed.erase(currentPathTrimmed.length()-1, 1);
 
 				sharedStack.push(currentPathTrimmed, currentDirDepth + 1);
@@ -1812,7 +1836,7 @@ int main(int argc, char** argv)
 		}
 		else
 		{ // this entry is not a directory
-			printEntry(currentPath, NULL, &statBuf);
+			processDiscoveredEntry(currentPath, NULL, &statBuf);
 		}
 	}
 
