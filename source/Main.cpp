@@ -57,6 +57,7 @@
 #define ARG_NOTIMEUPD_LONG	"notimeupd"
 #define ARG_PATH_LONG		"path"
 #define ARG_PRINT0_LONG		"print0"
+#define ARG_QUITAFTER1_LONG "quit"
 #define ARG_FILTER_SIZE		"size"
 #define ARG_STAT_LONG		"stat"
 #define ARG_THREADS_SHORT	't'
@@ -134,6 +135,7 @@ struct Config
 	bool ignoreUnlinkErrors {false}; // ignore unlink errors
 	bool copyTimeUpdate {true}; // update atime/mtime when copying files
 	ExternalProgExec exec; // config to execute external prog for each disovered entry
+	bool quitAfterFirstMatch {false}; // true to quit after first match
 } config;
 
 struct State
@@ -148,6 +150,7 @@ struct Statistics
 	std::atomic_uint64_t numDirsFound {0};
 	std::atomic_uint64_t numFilesFound {0};
 	std::atomic_uint64_t numUnknownFound {0};
+	std::atomic_uint64_t numFilterMatches {0};
 	std::atomic_uint64_t numStatCalls {0};
 	std::atomic_uint64_t numAccessACLsFound {0};
 	std::atomic_uint64_t numDefaultACLsFound {0};
@@ -1067,6 +1070,11 @@ void processDiscoveredEntry(const std::string& entryPath, const struct dirent* d
 	// unlink
 
 	unlinkEntry(entryPath, dirEntry, statBuf);
+
+	// note on quitAfterFirstMatch: we can't exit() here because of the other threads. and can't use
+	// kill(0, SIGTERM) because that would exit with error code. so recursive scan() checks this.
+
+	statistics.numFilterMatches++;
 }
 
 /**
@@ -1076,6 +1084,10 @@ void processDiscoveredEntry(const std::string& entryPath, const struct dirent* d
  */
 void scan(std::string path, const unsigned short dirDepth)
 {
+	// stop in case of for quitAfterFirstMatch
+	if(config.quitAfterFirstMatch && statistics.numFilterMatches)
+		return;
+
 	DIR* dirStream = opendir(path.c_str() );
 	if(!dirStream)
 	{
@@ -1234,7 +1246,8 @@ void printSummary()
 
 	std::cerr << "  * entries found: " <<
 			"files: " << statistics.numFilesFound << "; " <<
-			"dirs: " << statistics.numDirsFound << std::endl;
+			"dirs: " << statistics.numDirsFound << "; " <<
+			"filter matches: " << statistics.numFilterMatches << std::endl;
 
 	std::cerr << "  * special cases: " <<
 			"unknown type: " << statistics.numUnknownFound << "; " <<
@@ -1306,7 +1319,10 @@ void printUsageAndExit()
 	std::cout << "  --path PATTERN    - Filter on path of discovered entries." << std::endl;
 	std::cout << "                      Pattern may contain '*' & '?' as wildcards." << std::endl;
 	std::cout << "  --print0          - Terminate printed entries with null instead of newline." << std::endl;
-	std::cout << "                      (Hint: This is goes nicely with \"xargs -0\".)" << std::endl;
+	std::cout << "                      (Hint: This goes nicely with \"xargs -0\".)" << std::endl;
+	std::cout << "  --quit            - Terminate after first match. (Note: With multiple threads" << std::endl;
+	std::cout << "                      it's possible that more than one match gets printed." << std::endl;
+	std::cout << "                      Consider combining this with \"| head -n 1\".)" << std::endl;
 	std::cout << "  --size NUM        - Size filter." << std::endl;
 	std::cout << "                      +/- prefix to match greater or smaller values." << std::endl;
 	std::cout << "                      Default unit is 512-byte blocks." << std::endl;
@@ -1612,6 +1628,7 @@ void parseArguments(int argc, char** argv)
 				{ ARG_NOTIMEUPD_LONG, no_argument, 0, 0 },
 				{ ARG_PATH_LONG, required_argument, 0, 0 },
 				{ ARG_PRINT0_LONG, no_argument, 0, 0 },
+				{ ARG_QUITAFTER1_LONG, no_argument, 0, 0 },
 				{ ARG_SEARCHTYPE_LONG, required_argument, 0, 0 },
 				{ ARG_STAT_LONG, no_argument, 0, 0 },
 				{ ARG_THREADS_LONG, required_argument, 0, ARG_THREADS_SHORT },
@@ -1707,6 +1724,9 @@ void parseArguments(int argc, char** argv)
 				else
 				if(ARG_PRINT0_LONG == currentOptionName)
 					config.print0 = true;
+				else
+				if(ARG_QUITAFTER1_LONG == currentOptionName)
+					config.quitAfterFirstMatch = true;
 				else
 				if(ARG_SEARCHTYPE_LONG == currentOptionName)
 					config.searchType = (strlen(optarg) ? optarg[0] : 0);
