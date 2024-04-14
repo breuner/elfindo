@@ -442,13 +442,6 @@ bool filterPrintEntryByName(const std::string& entryPath, const struct dirent* d
 	if(config.nameFilterVec.empty() )
 		return true; // no filter defined by user => always passes
 
-	bool isFile =
-		(dirEntry && (dirEntry->d_type != DT_UNKNOWN) && (dirEntry->d_type != DT_DIR) ) ||
-		(statBuf && !S_ISDIR(statBuf->st_mode) );
-
-	if(!isFile)
-		return false; // anything that's not a file can't match
-
 	// check whether any of the given filter names matches
 
 	std::string currentFilename = std::filesystem::path(entryPath).filename().string();
@@ -1307,10 +1300,10 @@ void printUsageAndExit()
 	std::cout << "                      depth 0.)" << std::endl;
 	std::cout << "  --mtime NUM       - mtime filter based on number of days in the past." << std::endl;
 	std::cout << "                      +/- prefix to match older or more recent values." << std::endl;
-	std::cout << "  --name PATTERN    - Filter on filenames (not full path or dirnames)." << std::endl;
-	std::cout << "                      Pattern may contain '*' & '?' as wildcards." << std::endl;
-	std::cout << "                      This parameter can be given multiple times, in which case" << std::endl;
-	std::cout << "                      filenames machting any of the given patterns will pass" << std::endl;
+	std::cout << "  --name PATTERN    - Filter on name of file or current dir. Pattern may" << std::endl;
+	std::cout << "                      contain '*' & '?' as wildcards. This parameter can be" << std::endl;
+	std::cout << "                      given multiple times, in which case filenames matching" << std::endl;
+	std::cout << "                      any of the given patterns will pass." << std::endl;
 	std::cout << "                      the filter." << std::endl;
 	std::cout << "  --newer PATH      - Filter based on more recent mtime than given path." << std::endl;
 	std::cout << "  --noprint         - Do not print names of discovered files and dirs." << std::endl;

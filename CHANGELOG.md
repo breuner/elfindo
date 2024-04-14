@@ -10,6 +10,7 @@
 ### General Changes
 * Static builds now based on latest Alpine Linux 3.x instead of always 3.14.
 * Names of discovered files/dirs now get printed before other processing, such as copy or unlink.
+* Option "--name" also filters directory names now.
 
 ### Contributors
 * Thanks to Ido Szargel, Adar Zinger, Deborah Gironde for helpful comments and suggestions.
