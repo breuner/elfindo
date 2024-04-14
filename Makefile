@@ -3,9 +3,9 @@
 #
 
 EXE_NAME           ?= $(shell cat build_helpers/findexename)
-EXE_VER_MAJOR      ?= 0
-EXE_VER_MINOR      ?= 9
-EXE_VER_PATCHLEVEL ?= 5
+EXE_VER_MAJOR      ?= 1
+EXE_VER_MINOR      ?= 0
+EXE_VER_PATCHLEVEL ?= 1
 EXE_VERSION        ?= $(EXE_VER_MAJOR).$(EXE_VER_MINOR)-$(EXE_VER_PATCHLEVEL)
 EXE                ?= $(BIN_PATH)/$(EXE_NAME)
 EXE_UNSTRIPPED     ?= $(EXE)-unstripped
