@@ -1,5 +1,14 @@
 # Changelog of elfindo
 
+## v1.0.3 (Sep 24, 2024)
+
+### New Features & Enhancements
+* New options to filter by user and group. (See `--uid`, `--user`, `--gid`, `--group`.)
+* New options to not descend directories on other filesystems. (See `--xdev`, `--mount`.)
+
+### Contributors
+* Thanks to Anna Fuchs for helpful comments and suggestions.
+
 ## v1.0.1 (Apr 14, 2024)
 
 ### New Features & Enhancements

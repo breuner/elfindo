@@ -18,12 +18,14 @@
 #include <filesystem>
 #include <fnmatch.h>
 #include <getopt.h>
+#include <grp.h>
 #include <inttypes.h> // defines PRIu64 for printf uint64_t
 #include <iostream>
 #include <iomanip>
 #include <libgen.h>
 #include <list>
 #include <mutex>
+#include <pwd.h>
 #include <signal.h>
 #include <stack>
 #include <sstream>
@@ -42,11 +44,14 @@
 #define ARG_COPYDEST_LONG	"copyto"
 #define ARG_FILTER_CTIME	"ctime"
 #define ARG_EXEC_LONG		"exec"
+#define ARG_GID_LONG		"gid"
 #define ARG_GODEEP_LONG		"godeep"
+#define ARG_GROUP_LONG		"group"
 #define ARG_HELP_SHORT		'h'
 #define ARG_HELP_LONG		"help"
 #define ARG_JSON_LONG		"json"
 #define ARG_MAXDEPTH_LONG	"maxdepth"
+#define ARG_MOUNT_LONG		"mount"
 #define ARG_FILTER_MTIME	"mtime"
 #define ARG_NAME_LONG		"name"
 #define ARG_NEWER_LONG		"newer"
@@ -63,9 +68,12 @@
 #define ARG_THREADS_SHORT	't'
 #define ARG_THREADS_LONG	"threads"
 #define ARG_SEARCHTYPE_LONG	"type"
+#define ARG_UID_LONG		"uid"
 #define ARG_UNLINK_LONG		"unlink"
+#define ARG_USER_LONG		"user"
 #define ARG_VERBOSE_LONG	"verbose"
 #define ARG_VERSION_LONG	"version"
+#define ARG_XDEV_LONG		"xdev"
 
 #define DIRENTRY_JSON_TYPE_BLK		"blockdev"
 #define DIRENTRY_JSON_TYPE_CHR		"chardev"
@@ -128,6 +136,9 @@ struct Config
 
 		unsigned filterSizeAndTimeFlags; // FILTER_FLAG_..._{EXACT,LESS,GREATER} flags
 	} filterSizeAndTime;
+	uint64_t filterUID {~0ULL}; // numeric user ID
+	uint64_t filterGID {~0ULL}; // numeric group ID
+	uint64_t filterMountID {~0ULL}; // stay on mountpoint
 	std::string copyDestDir; // target dir for file/dir copies
 	bool ignoreCopyErrors {false}; // ignore copy errors
 	bool printEntriesDisabled {false}; // true to disable print of discovered entries
@@ -539,6 +550,34 @@ bool filterPrintEntryBySizeOrTime(const std::string& entryPath, const struct dir
 
 	return true; // all filters passed
 }
+
+/**
+ * Filter printed files by user-defined UID and GID.
+ *
+ * This requires stat() info.
+ *
+ * @return true if entry passes the filter and should be printed, false otherwise.
+ */
+bool filterPrintEntryByUIDAndGID(const std::string& entryPath, const struct dirent* dirEntry,
+	const struct stat* statBuf)
+{
+	// filter UID
+	if(config.filterUID != ~0ULL)
+	{
+		if(!statBuf || (statBuf->st_uid != config.filterUID) )
+			return false; // either no statBuf or UID mismatch
+	}
+
+	// filter GID
+	if(config.filterGID != ~0ULL)
+	{
+		if(!statBuf || (statBuf->st_gid != config.filterGID) )
+			return false; // either no statBuf or GID mismatch
+	}
+
+	return true;
+}
+
 
 /**
  * Replace all occurrences of EXEC_ARG_PATH_PLACEHOLDER in "subject" string with the given "path"
@@ -1048,6 +1087,9 @@ void processDiscoveredEntry(const std::string& entryPath, const struct dirent* d
 	if(!filterPrintEntryBySizeOrTime(entryPath, dirEntry, statBuf) )
 		return;
 
+	if(!filterPrintEntryByUIDAndGID(entryPath, dirEntry, statBuf) )
+		return;
+
 	// print entry
 
 	printEntry(entryPath, dirEntry, statBuf);
@@ -1121,7 +1163,7 @@ void scan(std::string path, const unsigned short dirDepth)
 		int statErrno = -1; // "-1" to let clear that statBuf is not usable yet
 
 		// if dentry type is unknown then we have to stat to know if this is a dir to descend into
-		if(config.statAll || dirEntry->d_type == DT_UNKNOWN)
+		if(config.statAll || (dirEntry->d_type == DT_UNKNOWN) )
 		{
 			statistics.numStatCalls++;
 
@@ -1153,7 +1195,11 @@ void scan(std::string path, const unsigned short dirDepth)
 
 			processDiscoveredEntry(entryPath, dirEntry, statErrno ? NULL : &statBuf);
 
-			if(dirDepth < config.maxDirDepth)
+			const bool doDescendDepth = (dirDepth < config.maxDirDepth);
+			const bool doDescendMount = (config.filterMountID == (~0ULL) ) ? true :
+				(!statErrno && (config.filterMountID == statBuf.st_dev) );
+
+			if(doDescendMount && doDescendDepth)
 			{
 				if(sharedStack.getSize() >= config.depthSearchStartThreshold)
 					scan(entryPath, dirDepth + 1);
@@ -1290,14 +1336,17 @@ void printUsageAndExit()
 	std::cout << "                      replaced by the current file/dir path. The argument ';'" << std::endl;
 	std::cout << "                      marks the end of the command line to run." << std::endl;
 	std::cout << "                      (Example: elfindo --exec ls -lhd '{}' \\; --type d)" << std::endl;
+	std::cout << "  --gid NUM         - Filter based on numeric group ID." << std::endl;
 	std::cout << "  --godeep NUM      - Threshold to switch from breadth to depth search." << std::endl;
 	std::cout << "                      (Default: number of scan threads)" << std::endl;
+	std::cout << "  --group STR       - Filter based on group name or numeric group ID." << std::endl;
 	std::cout << "  --json            - Print entries in JSON format. Each file/dir is a" << std::endl;
 	std::cout << "                      separate JSON root object. Contained data depends on" << std::endl;
 	std::cout << "                      whether \"--" ARG_STAT_LONG "\" is given." << std::endl;
 	std::cout << "                      (Hint: Consider the \"jq\" tool to filter results.)" << std::endl;
 	std::cout << "  --maxdepth        - Max directory depth to scan. (Path arguments have" << std::endl;
 	std::cout << "                      depth 0.)" << std::endl;
+	std::cout << "  --mount           - Alias for \"--xdev\"." << std::endl;
 	std::cout << "  --mtime NUM       - mtime filter based on number of days in the past." << std::endl;
 	std::cout << "                      +/- prefix to match older or more recent values." << std::endl;
 	std::cout << "  --name PATTERN    - Filter on name of file or current dir. Pattern may" << std::endl;
@@ -1324,9 +1373,12 @@ void printUsageAndExit()
 	std::cout << "  --stat            - Query attributes of all discovered files & dirs." << std::endl;
 	std::cout << "  -t, --threads NUM - Number of scan threads. (Default: 16)" << std::endl;
 	std::cout << "  --type TYPE       - Search type. 'f' for regular files, 'd' for directories." << std::endl;
+	std::cout << "  --uid NUM         - Filter based on numeric user ID." << std::endl;
 	std::cout << "  --unlink          - Delete discovered files, not dirs." << std::endl;
+	std::cout << "  --user STR        - Filter based on user name or numeric user ID." << std::endl;
 	std::cout << "  --verbose         - Enable verbose output." << std::endl;
 	std::cout << "  --version         - Print version and exit." << std::endl;
+	std::cout << "  --xdev            - Don't descend directories on other filesystems." << std::endl;
 	std::cout << std::endl;
 	std::cout << "Examples:" << std::endl;
 	std::cout << "  Find all files and dirs under /data/mydir:" << std::endl;
@@ -1579,6 +1631,8 @@ void parseExecArguments(int& argc, char** argv)
  */
 void parseArguments(int argc, char** argv)
 {
+	bool needFilterByDevIDInit = false; // true for delayed filter by mount ID init
+
 	/* note: this removes the "exec" arg and all following up to the terminator from argv,
 	 	 because getopt_long_only() below can change order of arguments in argv */
 	parseExecArguments(argc, argv);
@@ -1608,10 +1662,13 @@ void parseArguments(int argc, char** argv)
 				{ ARG_FILTER_CTIME, required_argument, 0, 0 },
 				{ ARG_FILTER_MTIME, required_argument, 0, 0 },
 				{ ARG_FILTER_SIZE, required_argument, 0, 0 },
+				{ ARG_GID_LONG, required_argument, 0, 0 },
 				{ ARG_GODEEP_LONG, required_argument, 0, 0 },
+				{ ARG_GROUP_LONG, required_argument, 0, 0 },
 				{ ARG_HELP_LONG, no_argument, 0, ARG_HELP_SHORT },
 				{ ARG_JSON_LONG, no_argument, 0, 0 },
 				{ ARG_MAXDEPTH_LONG, required_argument, 0, 0 },
+				{ ARG_MOUNT_LONG, no_argument, 0, 0 },
 				{ ARG_NAME_LONG, required_argument, 0, 0 },
 				{ ARG_NEWER_LONG, required_argument, 0, 0 },
 				{ ARG_NOCOPYERR_LONG, no_argument, 0, 0 },
@@ -1625,9 +1682,12 @@ void parseArguments(int argc, char** argv)
 				{ ARG_SEARCHTYPE_LONG, required_argument, 0, 0 },
 				{ ARG_STAT_LONG, no_argument, 0, 0 },
 				{ ARG_THREADS_LONG, required_argument, 0, ARG_THREADS_SHORT },
+				{ ARG_UID_LONG, required_argument, 0, 0 },
 				{ ARG_UNLINK_LONG, no_argument, 0, 0 },
+				{ ARG_USER_LONG, required_argument, 0, 0 },
 				{ ARG_VERBOSE_LONG, no_argument, 0, 0 },
 				{ ARG_VERSION_LONG, no_argument, 0, 0 },
+				{ ARG_XDEV_LONG, no_argument, 0, 0 },
 				{ 0, 0, 0, 0 } // all-zero is the terminating element
 		};
 
@@ -1682,14 +1742,52 @@ void parseArguments(int argc, char** argv)
 				if(ARG_FILTER_SIZE == currentOptionName)
 					PARSE_EXACT_LESS_GREATER_VAL(optarg, size, SIZE);
 				else
+				if(ARG_GID_LONG == currentOptionName)
+				{
+					config.filterGID = std::stoull(optarg);
+
+					config.statAll = true; // we need statBuf for this filter
+				}
+				else
 				if(ARG_GODEEP_LONG == currentOptionName)
 					config.depthSearchStartThreshold = std::atoi(optarg);
+				else
+				if(ARG_GROUP_LONG == currentOptionName)
+				{
+					if(strlen(optarg) && isdigit(optarg[0]) )
+						config.filterGID = std::stoull(optarg);
+					else
+					{
+						struct group* groupEntry = getgrnam(optarg);
+						if(!groupEntry)
+						{
+							fprintf(stderr, "Aborting because given group name could not be"
+								"resolved to numeric GID. Does the group exist? Group: %s\n",
+								optarg);
+							exit(EXIT_FAILURE);
+						}
+
+						config.filterGID = groupEntry->gr_gid;
+					}
+
+					config.statAll = true; // we need statBuf for this filter
+				}
 				else
 				if(ARG_JSON_LONG == currentOptionName)
 					config.printJSON = true;
 				else
 				if(ARG_MAXDEPTH_LONG == currentOptionName)
 					config.maxDirDepth = std::atoi(optarg);
+				else
+				if( (ARG_MOUNT_LONG == currentOptionName) ||
+					(ARG_XDEV_LONG == currentOptionName) )
+				{
+					/* we can't init dev ID here yet because we have not initialized the mount
+						mount points yet. */
+					needFilterByDevIDInit = true;
+
+					config.statAll = true; // we need statBuf for this filter
+				}
 				else
 				if(ARG_NAME_LONG == currentOptionName)
 					config.nameFilterVec.push_back(optarg);
@@ -1727,10 +1825,37 @@ void parseArguments(int argc, char** argv)
 				if(ARG_STAT_LONG == currentOptionName)
 					config.statAll = true;
 				else
+				if(ARG_UID_LONG == currentOptionName)
+				{
+					config.filterUID = std::stoull(optarg);
+
+					config.statAll = true; // we need statBuf for this filter
+				}
+				else
 				if(ARG_UNLINK_LONG == currentOptionName)
 				{
 					config.unlinkFiles = true;
 					config.statAll = true; // to be able to rely on type in statBuf for dir vs file
+				}
+				else
+				if(ARG_USER_LONG == currentOptionName)
+				{
+					if(strlen(optarg) && isdigit(optarg[0]) )
+						config.filterUID = std::stoull(optarg);
+					else
+					{
+						struct passwd* passwdEntry = getpwnam(optarg);
+						if(!passwdEntry)
+						{
+							fprintf(stderr, "Aborting because given user name could not be "
+								"resolved to numeric UID. Does the user exist? User: %s\n", optarg);
+							exit(EXIT_FAILURE);
+						}
+
+						config.filterUID = passwdEntry->pw_uid;
+					}
+
+					config.statAll = true; // we need statBuf for this filter
 				}
 				else
 				if(ARG_VERBOSE_LONG == currentOptionName)
@@ -1789,6 +1914,24 @@ void parseArguments(int argc, char** argv)
 		fprintf(stderr, "Only a single scan path may be given when "
 			"\"--" ARG_COPYDEST_LONG "\" is used\n");
 		exit(EXIT_FAILURE);
+	}
+
+	/* delayed dev ID init to not descend into other mountpoints...
+		(init of this is here because we need to have scan paths initialized.) */
+	if(needFilterByDevIDInit)
+	{
+		struct stat statBuf;
+
+		int statRes = stat(config.scanPaths.empty() ? "." : config.scanPaths.front().c_str(),
+			&statBuf);
+
+		if(statRes != 0)
+		{
+			fprintf(stderr, "Aborting because dev ID retrieval for scan path failed.\n");
+			exit(EXIT_FAILURE);
+		}
+
+		config.filterMountID = statBuf.st_dev;
 	}
 
 }
