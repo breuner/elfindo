@@ -7,7 +7,7 @@
 * New options to not descend directories on other filesystems. (See `--xdev`, `--mount`.)
 
 ### Contributors
-* Thanks to Anna Fuchs for helpful comments and suggestions.
+* Thanks to Carsten Beyer and Anna Fuchs for helpful comments and suggestions.
 
 ## v1.0.1 (Apr 14, 2024)
 
